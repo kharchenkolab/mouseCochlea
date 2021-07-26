@@ -1,0 +1,108 @@
+---
+title: "Replicate_Consistency"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Cell composition
+
+```{r}
+# load conE and clusters
+
+conE <- readRDS('/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/conE.rds')
+
+# cluster
+conE_clusters <- conE$clusters$leiden$groups
+```
+
+
+```{r}
+# remove unwanted clusters
+conE_plot_clusters <- conE_clusters
+levels(conE_plot_clusters) <- c(seq(1,11,1), rep(NA, 6))
+conE_plot <- conE
+conE_plot$clusters$leiden$groups <- conE_plot_clusters
+```
+
+
+## Fig. S4A
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide27_largerfont.tiff',
+    width = 250, height = 150, units = 'mm', res = 200)
+
+par(pty="m", mar = rep(20,4))
+plotClusterBarplots(conos.obj = conE_plot, show.entropy = FALSE, show.size = FALSE) + 
+  theme( plot.title = element_text(size = 20, hjust = 0.5),
+    legend.title=element_text(size=18), 
+    legend.text=element_text(size=15),
+    axis.text = element_text(size=15),
+    axis.title = element_text(size=18))
+dev.off()
+```
+
+# Fig.S4B
+```{r}
+#function to get cluster composition
+getClusterComp <- function(conos.obj, clustering = NULL, groups = NULL){
+  groups <- conos.obj$clusters[[1]]$groups
+  sample.factor <- conos.obj$getDatasetPerCell()
+  xt <- table(sample.factor[match(names(groups),names(sample.factor))],groups)
+  xt <- xt[rowSums(xt)>0, ]
+  xt <- xt[ ,colSums(xt)>0]
+
+  df <- reshape2::melt(xt)
+  colnames(df) <- c("sample","cluster","f")
+  #df$f <- df$f/colSums(xt)[as.character(df$cluster)]
+  
+  return(df)
+}
+```
+
+```{r}
+# get cell composition per sample
+conE_plot_distr <- getClusterComp(conE_plot)
+```
+
+normalize by cell count
+
+## Fig. S4B
+```{r}
+comp_plots_list <- lapply(c('E14', 'E18', 'P14'), function(tp) {
+sub_df <- conE_plot_distr %>% dplyr::filter(substr(sample,1,3) == tp)
+tmp <- sub_df %>% group_by(sample) %>% summarise(norm_frac = f/ sum(f), cluster = cluster)
+merged <- base::merge(sub_df, tmp, by = c('sample', 'cluster'))
+  
+  merged %>% ggplot2::ggplot( ggplot2::aes(x=factor(cluster, levels=levels(conE_plot$clusters[[1]]$groups)),y=.data$norm_frac,fill=.data$sample)) +
+    ggplot2::geom_bar(stat='identity', position="dodge") + ggplot2::xlab('cluster') + ggplot2::ylab('normalized fraction')  + 
+    ggplot2::ggtitle(paste('normalized fraction for', tp)) + 
+    ggplot2::scale_y_continuous(expand=c(0, 0)) +
+    ggplot2::scale_color_manual(labels = seq(1,3)) +
+    ggplot2::theme_bw() + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+          plot.title = element_text(size = 20, hjust = 0.5),
+    legend.title=element_text(size=18), 
+    legend.text=element_text(size=15),
+    axis.text = element_text(size=15),
+    axis.title = element_text(size=18),
+     )
+
+})
+ggarrange(comp_plots_list[[1]], comp_plots_list[[2]],comp_plots_list[[3]],
+          #labels = c("A", "B", "C"),
+          ncol = 2, nrow = 2)
+```
+
+
+```{r}
+# plot each
+for(i in seq(1,3)){
+  plt <- comp_plots_list[[i]]
+  fn <- paste0('slide28_largerfont', i,'.tiff')
+  ggsave(filename = fn, plot = plt, path = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures', width = 250, height = 150, units = 'mm', device='tiff', dpi=150)
+}
+```
+
+

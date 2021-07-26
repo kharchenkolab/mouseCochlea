@@ -1,0 +1,404 @@
+---
+title: "Trajectory analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# setup environment
+## library
+```{r}
+library(igraph)
+library(mgcv)
+library(quadprog) 
+library(pcaMethods) 
+library(Rcpp) 
+library(inline) 
+library(RcppArmadillo) 
+library(pbapply)
+library(glmnet)
+library(conos)
+
+library(crestree)
+
+```
+
+## objects
+
+```{r}
+conE <- readRDS('/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/conE.rds')
+```
+
+```{r}
+# extract embedding mat
+emb <- conE$embedding
+
+# cluster
+conE_clusters <- conE$clusters$leiden$groups
+
+## get the raw counts matrix
+raw.mat <- conE$getJointCountMatrix(raw= T)
+```
+
+```{r}
+# split conchela and DRG cells
+cochela.cells <- rownames(emb)[grep(pattern = 'cochlea', x = rownames(emb))]
+DRG.cells <- rownames(emb)[grep(pattern = 'DRG', x = rownames(emb))]
+```
+
+
+# building trajectory tree
+## DRG
+```{r}
+# 0.1, 16000
+M <- round(dim(emb[DRG.cells, ])[1] / 10)
+length(M) # 2161
+
+sigma <- 0.1
+lambda <- 160000
+metrics <- "euclidean"
+z <- ppt.tree(X=t(emb[DRG.cells, ]),M=M, emb=emb, lambda=lambda, sigma=sigma, metrics=metrics, err.cut = 5e-3, n.steps=200, seed=1, plot=F)
+
+# plot embedding
+plotppt(z,emb,tips=T,cex.tree = 0.1,cex.main=0.2,lwd.tree = 1)
+```
+
+remove spurious branch
+```{r}
+tmp <- cleanup.branches(z,tips.remove = 1592)
+plotppt(tmp,emb,tips=TRUE,forks=FALSE,cex.tree = 0.2,lwd.tree = 2)
+ppt <- tmp
+```
+
+```{r}
+# set root on cells
+ppt <- setroot(ppt,root=801)
+ppt <- project.cells.onto.ppt(ppt,emb,n.mapping = 5)
+```
+
+```{r}
+saveRDS(ppt, file = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/z_DRG_0.1_16_raw.rds')
+```
+
+## cochlea
+### filter cochlea cells
+cells from non-continous region on the embedding cannot be modeled as part of a progression, thus removed
+```{r}
+cochlea_clusters <- conE_clusters[cochela.cells]
+cochlea_selected <- names(cochlea_clusters[!cochlea_clusters %in% c(8,11)])
+length(cochlea_selected) #5886
+```
+
+### build tree
+```{r}
+# final param: 0.05, 40000
+M <- round(dim(emb[cochlea_selected, ])[1] / 10)
+length(M) # 589
+
+sigma <- 0.05
+lambda <- 40000
+metrics <- "euclidean"
+ppt <- ppt.tree(X=t(emb[cochlea_selected, ]),M=M, emb=emb, lambda=lambda, sigma=sigma, metrics=metrics, err.cut = 5e-3, n.steps=250, seed=1, plot=F)
+
+# plot embedding
+plotppt(ppt,emb,tips=T,cex.tree = 0.1,cex.main=0.2,lwd.tree = 1)
+```
+
+```{r}
+# set root on cells
+ppt <- setroot(ppt,root=293)
+ppt <- project.cells.onto.ppt(ppt,emb,n.mapping = 5)
+```
+
+```{r}
+saveRDS(ppt, file = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/z_cochlea_0.05_4_raw.rds')
+```
+
+# branch DE genes
+## DRG
+branch DE analysis
+```{r}
+# look at bifrcation event MSC vs. NMSC
+root <- 1736
+leaves <- c(270, 332)
+subtree <- extract.subtree(ppt,c(root,leaves))
+plotppt(ppt,emb,tips=TRUE,forks=FALSE,cex.tree = 0.3,lwd.tree = 3,subtree=subtree)
+```
+
+```{r}
+fork.de <- test.fork.genes(ppt,t(raw.mat),root=root,leaves=leaves,n.mapping = 1, n.cores = 12)
+fork.de <- branch.specific.genes(fork.de,effect.b1 = 0.1,effect.b2 = 0.1, stf.cut = 0)
+```
+
+```{r}
+# tree DE genes
+genes.tree <- ppt$stat.association %>% filter(sign == T)
+```
+
+```{r}
+DRG_NMSC <- fork.de[intersect(rownames(fork.de)[fork.de$state==2], rownames(genes.tree)), ]
+DRG_NMSC$tissue <- 'DRG'
+DRG_NMSC$gene <- rownames(DRG_NMSC)
+
+DRG_MSC <- fork.de[intersect(rownames(fork.de)[fork.de$state==1], rownames(genes.tree)), ]
+DRG_MSC$tissue <- 'DRG'
+DRG_MSC$gene <- rownames(DRG_MSC)
+```
+
+```{r}
+fork.de['Ncmap', ]$stf >= 0 & fork.de['Ncmap', ]$effect  > 0.1 & fork.de['Ncmap', ]$pd1.a > 0 & fork.de['Ncmap', ]$pd1.p < 0.05
+```
+
+## cochlea
+branch DE analysis
+```{r}
+# look at bifrcation event MSC vs. NMSC
+root <- 163
+leaves <- c(59, 69)
+subtree <- extract.subtree(ppt_cochlea,c(root,leaves))
+plotppt(ppt_cochlea,emb,tips=TRUE,forks=FALSE,cex.tree = 0.3,lwd.tree = 3,subtree=subtree)
+```
+
+```{r}
+ppt <- ppt_cochlea
+fork.de.cochlea <- test.fork.genes(ppt,t(raw.mat),root=root,leaves=leaves,n.mapping = 1, n.cores = 12)
+```
+
+```{r}
+fork.de.cochlea <- branch.specific.genes(fork.de.cochlea,effect.b1 = 0.1,effect.b2 = 0.1, stf = 0)
+```
+
+```{r}
+cochlea_NMSC <- fork.de.cochlea[intersect(rownames(fork.de.cochlea)[fork.de.cochlea$state==2], rownames(genes.tree)), ]
+#branch2_up <- fork.de.cochlea %>% filter(stf >= 0 & effect  < -0.1)
+#cochlea_NMSC <- fork.de.cochlea[intersect(rownames(branch2_up), rownames(genes.tree)), ]
+cochlea_NMSC[1, ] <- rep('placeholder', 10)
+cochlea_NMSC$celltype <- 'NMSC'
+cochlea_NMSC$gene <- rownames(cochlea_NMSC)
+
+cochlea_MSC <- fork.de.cochlea[intersect(rownames(fork.de.cochlea)[fork.de.cochlea$state==1], rownames(genes.tree)), ]
+cochlea_MSC <- fork.de.cochlea[intersect(rownames(branch1_up), rownames(genes.tree)), ]
+cochlea_MSC$tissue<- 'cochlea'
+cochlea_MSC$gene <- rownames(cochlea_MSC)
+```
+
+## take the intersection of DE genes
+
+### Table S1
+```{r}
+schwann_MSC_idx <- intersect(rownames(DRG_MSC), rownames(cochlea_MSC))
+# remove Rik cells
+schwann_MSC_idx <- schwann_MSC_idx[!grepl(schwann_MSC_idx, pattern = 'Rik', fixed = TRUE)]
+schwann_MSC_idx <- schwann_MSC_idx[!grepl(schwann_MSC_idx, pattern = 'mt-', fixed = TRUE)]
+
+schwann_MSC <- merge(x = DRG_MSC[schwann_MSC_idx,-c(10,11)], y = cochlea_MSC[rownames(cochlea_MSC) %in%schwann_MSC_idx, -c(11,10)], by = 'gene', suffixes = c('.DRG', '.cochlea'))
+schwann_MSC$celltype <- 'MSC'
+rownames(schwann_MSC) <- schwann_MSC$gene
+write.csv(schwann_MSC, file = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/MSC_DEG.csv', quote = FALSE)
+```
+
+```{r}
+schwann_NMSC_idx <- union(rownames(DRG_NMSC), rownames(cochlea_NMSC))
+# remove Rik cells
+schwann_NMSC_idx <- schwann_NMSC_idx[!grepl(schwann_NMSC_idx, pattern = 'Rik', fixed = TRUE)]
+schwann_NMSC_idx <- schwann_NMSC_idx[!grepl(schwann_NMSC_idx, pattern = 'mt-', fixed = TRUE)]
+
+schwann_NMSC <- merge(x = DRG_NMSC[,-c(10,11)], y = cochlea_NMSC[, -c(11,10)], by = 'gene', suffixes = c('.DRG', '.cochlea'))
+
+schwann_NMSC <- DRG_NMSC
+schwann_NMSC$celltype <- 'NMSC'
+
+write.csv(schwann_NMSC, file = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/NMSC_DEG.csv', quote = FALSE)
+```
+
+# plotting
+
+## trajectory tree Fig. 4F
+
+```{r}
+plot_segments <- function(tree, color, line_width = 2) {
+  al <- get.edgelist(graph.adjacency(tree$B>0))
+  al <- matrix(as.integer(al),ncol=2) # adj matrix for branches
+  F <- t(t(t(emb[rownames(tree$R),])%*%tree$R)/colSums(tree$R))
+  segments(F[1,al[,1]],F[2,al[,1]],F[1,al[,2]],F[2,al[,2]],lwd=line_width, col = color)
+}
+```
+
+```{r}
+r <- z_DRG
+vi = rownames(emb)%in%rownames(r$R); names(vi) <- rownames(emb) # logical factor
+F <- t(t(t(emb[rownames(r$R),])%*%r$R)/colSums(r$R)) # principal point coord
+cols <- rep("grey",nrow(emb)); names(cols) <- rownames(emb) # colors for embedding
+pattern.tree <- NULL
+tree.col = "black"
+
+# plot
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide22s.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+     
+
+par(mar=rep(1,4), pty="s")
+# background
+plot(emb,pch=ifelse(vi,19,1),cex=0.5,col = adjustcolor(cols,ifelse(is.null(pattern.tree),1,0.1)),
+     xlab=NA,ylab=NA,xaxt='n',yaxt='n',main=NULL,cex.main=1,font.main=1)
+
+
+# DRG tree:
+plot_segments(z_DRG,  color = 'blue', line_width = 5)
+
+# cochlea tree:
+plot_segments(z_cochlea,  color = 'red', line_width = 5)
+
+dev.off()
+```
+
+
+## Fig 4G. DRG (upper)
+
+```{r}
+ppt <- readRDS(file = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/z_DRG_0.1_16_raw.rds')
+```
+
+change color to match cochlea tree
+```{r}
+color_df <- ppt$cell.summary
+color_df <- color_df %>% select(-color) %>% mutate(color = case_when(
+  seg == 1 ~ '#FF0000',
+  seg == 2 ~ '#00FF00',
+  seg == 3 ~ '#0000FF',
+  seg == 4 ~ '#CCFF00',
+  seg == 5 ~ '#CC00FF',
+))
+ppt$cell.summary <- color_df
+
+pp_info <- ppt$pp.info
+pp_info <- pp_info %>% select(-color) %>% mutate(color = case_when(
+  seg == 1 ~ '#FF0000',
+  seg == 2 ~ '#00FF00',
+  seg == 3 ~ '#0000FF',
+  seg == 4 ~ '#CCFF00',
+  seg == 5 ~ '#CC00FF',
+))
+ppt$pp.info <- pp_info
+```
+
+### DRG trajectory tree (Fig. 4G upper left)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide30_L_color.tiff',width = 300, height = 300, units = 'mm', res = 200)
+par(mar=rep(1,4), pty="s")
+cols <- adjustcolor(ppt$cell.summary[rownames(ppt$R),]$color,0.2); names(cols) <- rownames(ppt$R)
+plotppt(ppt,emb,cex.col=cols,
+        cex.main=0.5, tree.col=ppt$pp.info$color,cex.title=1,cex.tree=1,lwd.tree=1)
+dev.off()
+```
+
+### Ncmap (Fig. 4G upper right)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide30_R.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+par(pty="s")
+gene <- 'Ncmap'
+plotppt(ppt,emb,pattern.cell = ppt$fit.summary[gene,],gene=gene,cex.main=1,cex.tree = 1.0,lwd.tree = 0.1,par=FALSE, cex.title=6)
+dev.off()
+```
+
+### Scn7a (Fig. S10 upper right)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide32_R.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+gene <- 'Scn7a'
+par(pty="s")
+plotppt(ppt,emb,pattern.cell = ppt$fit.summary[gene,],gene=gene,cex.main=1,cex.tree = 1.0,lwd.tree = 0.1,par=FALSE, cex.title=6)
+dev.off()
+```
+
+### pseudotime plot Ncmap (Fig. 4G upper middle)
+
+```{r}
+ tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide30_M_color.tiff',width = 250, height = 150, units = 'mm', res = 200)
+custom_ind <- subset(ppt$cell.summary, !(seg == 1 & t > 3.87))
+ppt_removed <- ppt
+ppt_removed$cell.summary <- custom_ind
+gene <- 'Ncmap'
+visualise.trajectory(ppt_removed,gene,t(mat)[gene,],cex.main = 4,lwd.t2=0.5, cex.lab=3)
+dev.off()
+```
+
+### pseudotime plot Scn7a (Fig. S10 upper middle)
+
+```{r}
+# tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide32_M.tiff',
+#     width = 250, height = 150, units = 'mm', res = 200)
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide32_M_color.tiff',
+    width = 250, height = 150, units = 'mm', res = 200)
+gene <- 'Scn7a'
+custom_ind <- subset(ppt$cell.summary, !(v0 == 332 & v1 == 1361))
+ppt_removed <- ppt
+ppt_removed$cell.summary <- custom_ind
+visualise.trajectory(ppt_removed,gene,t(mat)[gene,],cex.main = 4,lwd.t2=0.5, cex.lab=3)
+dev.off()
+```
+
+## Fig. 4G cochlea (lower)
+load cochlea object
+```{r}
+ppt <- readRDS('/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/z_cochlea_0.05_4_raw.rds')
+```
+
+
+### cochlea trajectory tree (Fig. 4G lower left)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide3133_L.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+par(mar=rep(1,4), pty="s")
+ppt <- project.cells.onto.ppt(ppt,emb,n.mapping = 5)
+dev.off()
+```
+
+### Ncmap (Fig. 4G lower right)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide31R.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+gene <- 'Ncmap'
+par(pty="s")
+plotppt(ppt,emb,pattern.cell = ppt$fit.summary[gene,],gene=gene,cex.main=1,cex.tree = 1.0,lwd.tree = 0.1,par=FALSE, cex.title=6)
+dev.off()
+```
+
+
+### Scn7a (Fig. S10 lower right)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide33R.tiff',
+     width = 300, height = 300, units = 'mm', res = 200)
+gene <- 'Scn7a'
+par(pty="s")
+plotppt(ppt,emb,pattern.cell = ppt$fit.summary[gene,],gene=gene,cex.main=1,cex.tree = 1.0,lwd.tree = 0.1,par=FALSE, cex.title=6)
+dev.off()
+```
+
+### pseudotime plot Ncmap (Fig. 4G lower middle)
+
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide31_M.tiff',
+     width = 250, height = 150, units = 'mm', res = 200)
+gene <- 'Ncmap'
+custom_ind <- subset(ppt$cell.summary, !(v0 == 59 & v1 == 98))
+ppt_removed <- ppt
+ppt_removed$cell.summary <- custom_ind
+visualise.trajectory(ppt_removed,gene,t(mat)[gene,],cex.main = 4,lwd.t2=0.5, cex.lab=3)
+dev.off()
+```
+
+### pseudotime plot Scn7a (Fig. S10 lower middle)
+```{r}
+tiff(filename = '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/final_figures/slide33_M.tiff',
+     width = 250, height = 150, units = 'mm', res = 200)
+gene <- 'Scn7a'
+custom_ind <- subset(ppt$cell.summary, !(v0 == 69 & v1 == 449))
+ppt_removed <- ppt
+ppt_removed$cell.summary <- custom_ind
+visualise.trajectory(ppt_removed,gene,t(mat)[gene,],cex.main = 4,lwd.t2=0.5, cex.lab=3)
+dev.off()
+```

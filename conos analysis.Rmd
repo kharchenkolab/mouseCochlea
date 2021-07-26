@@ -1,0 +1,528 @@
+---
+title: "DRG Cochlea 3"
+output: html_notebook
+---
+
+
+```{r echo=FALSE, include=FALSE}
+library(pagoda2)
+library(dplyr)
+library(conos)
+library(parallel)
+library(cowplot)
+library(ggrepel)
+library(Matrix)
+source("/home/pkharchenko/m/pavan/DLI/conp2.r")
+```
+
+
+Load old analysis and lift
+```{r}
+old.con <- readRDS("con_sep28.rds")
+
+```
+```{r}
+set.seed(3)
+old.con$findCommunities(method=leiden.community,resolution=1.2,name='ll')
+```
+
+
+```{r fig.width=9,fig.height=4}
+p1 <- old.con$plotGraph(title='leiden',clustering='leiden',alpha=0.05) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+#gn <- 'Plp1'; p1 <- con$plotGraph(title=gn,gene=gn,alpha=0.1);
+p2 <- old.con$plotGraph(title='ll',clustering='ll',alpha=0.05) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- old.con$plotGraph(color.by='sample',mark.groups=F,alpha=0.01,show.legend=F,title='batch')
+cowplot::plot_grid(plotlist=list(p1,p2,p3), nrow=1)
+```
+
+Update annotation
+```{r}
+x <- old.con$clusters$ll$groups;
+fann <- setNames(rep('glia',length(x)),names(x));
+fann[x %in% c(5,7,16)] <- 'Neurons';
+fann[x %in% c(13)] <- 'Oli';
+fann[x %in% c(4)] <- 'Mesenchymal';
+fann[x %in% c(11)] <- 'Prosensory';
+fann[x %in% c(1,3)] <- 'sat glia';
+fann[x %in% c(9)] <- 'glial progen';
+fann[x %in% c(2)] <- 'nmSC';
+fann[x %in% c(10)] <- 'pmSC';
+fann[x %in% c(8)] <- 'mSC';
+fann <- as.factor(fann)
+```
+
+```{r fig.width=9,fig.height=4}
+p1 <- old.con$plotGraph(title='annotation',groups=fann,alpha=0.05) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+#gn <- 'Plp1'; p1 <- con$plotGraph(title=gn,gene=gn,alpha=0.1);
+p2 <- old.con$plotGraph(title='ll',clustering='ll',alpha=0.05) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- old.con$plotGraph(color.by='sample',mark.groups=F,alpha=0.01,show.legend=F,title='batch')
+cowplot::plot_grid(plotlist=list(p1,p2,p3), nrow=1)
+```
+
+
+Analyze new data
+
+Load data and run basic processing
+
+```{r}
+load("../drg_cochlea.RData")
+```
+
+
+```{r}
+source("~/m/pavan/DLI/conp2.r")
+scrublets <- mclapply(panel,get.scrublet.scores,mc.cores=30)
+scrubletf <- setNames(unlist(scrublets),unlist(lapply(scrublets,names)))
+hist(scrubletf,col='wheat')
+```
+
+Ozge's annotation
+```{r}
+oan <- readPagoda2SelectionAsFactor('annot_1_9_20.txt')
+table(oan)
+```
+
+doublet scores by cluster .. does cluster 14 look like doublets? 
+```{r fig.width=10, fig.height=10}
+df<-data.frame(cell=names(oan),cluster=oan,scrublet=scrubletf[names(oan)])
+ggplot(df,aes(x=cluster,y=scrublet,color=cluster))+geom_boxplot(notch = T)+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ theme(legend.position="none")
+```
+
+```{r}
+object <- lapply(panel, basicP2proc, n.cores=30, min.cells.per.gene=0, n.odgenes=2e3, get.largevis=FALSE, make.geneknn=FALSE, get.tsne=FALSE)
+```
+
+
+Integrate
+```{r}
+conO <- Conos$new(object,n.cores=30); 
+conO$buildGraph(k=15, k.self=5, space='PCA', ncomps=30, n.odgenes=2000, verbose=TRUE)
+conO$findCommunities(method=leiden.community,resolution=1.0)
+```
+
+Embeddings
+```{r}
+if(is.null(conO$misc$embeddings)) conO$misc$embeddings <- list()
+conO$misc$embeddings$umapPCA <- conO$embedGraph(method='UMAP');
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(0)
+conO$embedGraph(sgd_batches=2e8,alpha=0.5,seed=4)
+conO$misc$embeddings$lvPCA <- conO$embedding
+```
+
+
+
+```{r}
+tissuef <- con$getDatasetPerCell()
+tissuef <- as.factor(setNames(gsub(".*_","",as.character(tissuef)),names(tissuef)))
+```
+
+```{r fig.width=9,fig.height=6}
+conO$embedding <- conO$misc$embeddings$umapPCA
+size <- 0.5; alpha <- 0.1; raster <- T;
+p1 <- conO$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p2 <- conO$plotGraph(title='annot',groups=fann,alpha=alpha,raster=raster,plot.na=F,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- conO$plotGraph(color.by='sample',mark.groups=F,raster=raster,alpha=alpha,show.legend=F,title='sample',size=size)
+p4 <- conO$plotGraph(groups=tissuef,mark.groups=F,raster=raster,alpha=alpha,show.legend=T,title='tissue',size=size)+theme(legend.position = c(0.2, 0.85))
+p5 <- conO$plotGraph(groups=scrubletf>0.25,raster=raster,alpha=alpha,title='scrublet',mark.groups=F,size=size,palette=c('FALSE'='gray90','TRUE'='red'))
+p6 <- conO$plotGraph(gene='Hba-a1',raster=raster,alpha=0.2,show.legend=F,title='Hba',size=0.5)
+p <- cowplot::plot_grid(plotlist=list(p1,p2,p3,p4,p5,p6), nrow=2)
+#pdf(file='feb03.conO.overview.pdf',width=12,height=3); print(p); dev.off();
+p
+```
+
+
+Cluster 13 appears to be expression hemoglobin genes
+
+```{r fig.width=7,fig.height=7}
+conO$plotGraph(groups=oan,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+
+### Clean run on filtered populations
+
+Filter cells
+```{r}
+# list of invalid cells
+x <- conO$clusters$leiden$groups;
+ivi <- unique(c(names(x)[x=='13'],names(scrubletf)[scrubletf>0.25]))
+str(ivi)
+```
+```{r}
+object <- lapply(lapply(panel,function(x) x[,!colnames(x) %in% ivi]), basicP2proc, n.cores=30, min.cells.per.gene=0, n.odgenes=2e3, get.largevis=FALSE, make.geneknn=FALSE, get.tsne=FALSE)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+conF <- Conos$new(object,n.cores=30); 
+conF$buildGraph(k=15, k.self=5, space='PCA', ncomps=50, n.odgenes=2000, verbose=TRUE)
+conF$findCommunities(method=leiden.community,resolution=1.0)
+```
+
+Embeddings
+```{r}
+if(is.null(conF$misc$embeddings)) conF$misc$embeddings <- list()
+conF$misc$embeddings$umapPCA <- conF$embedGraph(method='UMAP');
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(0)
+conF$misc$embeddings$lvPCA <- conF$embedGraph(sgd_batches=2e8,alpha=0.5,seed=4)
+```
+
+
+```{r fig.width=9,fig.height=6}
+conF$embedding <- conF$misc$embeddings$umapPCA
+size <- 0.5; alpha <- 0.1; raster <- T;
+p1 <- conF$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p2 <- conF$plotGraph(title='annot',groups=fann,alpha=alpha,raster=raster,plot.na=F,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- conF$plotGraph(color.by='sample',mark.groups=F,raster=raster,alpha=alpha,show.legend=F,title='sample',size=size)
+p4 <- conF$plotGraph(groups=tissuef,mark.groups=F,raster=raster,alpha=alpha,show.legend=T,title='tissue',size=size)+theme(legend.position = c(0.2, 0.85))
+p5 <- conF$plotGraph(groups=scrubletf>0.25,raster=raster,alpha=alpha,title='scrublet',mark.groups=F,size=size,palette=c('FALSE'='gray90','TRUE'='red'))
+p6 <- conF$plotGraph(gene='Hba-a1',raster=raster,alpha=0.2,show.legend=F,title='Hba',size=0.5)
+p <- cowplot::plot_grid(plotlist=list(p1,p2,p3,p4,p5,p6), nrow=2)
+#pdf(file='feb03.conO.overview.pdf',width=12,height=3); print(p); dev.off();
+p
+```
+
+
+```{r fig.width=7,fig.height=7}
+conF$plotGraph(groups=oan,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+```{r}
+conF$plotPanel(alpha=0.2,size=0.1)
+```
+
+
+
+Marker genes
+```{r}
+fac <- conF$clusters$leiden$groups;
+conF.de <- conF$getDifferentialGenes(groups=fac, n.cores=30,append.auc=TRUE,z.threshold=2,upregulated.only=T)
+```
+
+```{r fig.width=6,fig.height=12}
+#source("~/m/p2/conos/R/plot.R")
+pp <- plotDEheatmap(conF,fac,conF.de,n.genes.per.cluster = 10 ,show.gene.clusters=T, column.metadata=list(tissue=tissuef),row.label.font.size=9,min.auc=0.7)
+#pdf(file='ann.heatmap.pdf',width=7,height=14); print(pp); dev.off();
+pp
+```
+
+
+
+### cleaned up version using combined cochlea+drg matrices
+
+```{r}
+load("../drg_cochlea.comb.RData")
+```
+
+
+```{r}
+objectc <- lapply(lapply(panel,function(x) x[,!colnames(x) %in% ivi]), basicP2proc, n.cores=30, min.cells.per.gene=0, n.odgenes=2e3, get.largevis=FALSE, make.geneknn=FALSE, get.tsne=FALSE)
+```
+
+
+```{r}
+conC <- Conos$new(objectc,n.cores=30); 
+conC$buildGraph(k=15, k.self=5, space='PCA', ncomps=50, n.odgenes=2000, verbose=TRUE)
+set.seed(1)
+conC$findCommunities(method=leiden.community,resolution=3)
+```
+
+Embeddings
+```{r}
+if(is.null(conC$misc$embeddings)) conC$misc$embeddings <- list()
+conC$misc$embeddings$umapPCA <- conC$embedGraph(method='UMAP');
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(0)
+conC$misc$embeddings$lvPCA <- conC$embedGraph(sgd_batches=2e8,alpha=0.5,seed=4)
+```
+
+
+```{r fig.width=9,fig.height=6}
+conC$embedding <- conC$misc$embeddings$lvPCA
+size <- 0.5; alpha <- 0.1; raster <- T;
+p1 <- conC$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p2 <- conC$plotGraph(title='annot',groups=fann,alpha=alpha,raster=raster,plot.na=F,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- conC$plotGraph(color.by='sample',mark.groups=F,raster=raster,alpha=alpha,show.legend=F,title='sample',size=size)
+p4 <- conC$plotGraph(groups=tissuef,mark.groups=F,raster=raster,alpha=alpha,show.legend=T,title='tissue',size=size)+theme(legend.position = c(0.2, 0.85))
+p5 <- conC$plotGraph(groups=scrubletf>0.25,raster=raster,alpha=alpha,title='scrublet',mark.groups=F,size=size,palette=c('FALSE'='gray90','TRUE'='red'))
+p6 <- conC$plotGraph(gene='Hba-a1',raster=raster,alpha=0.2,show.legend=F,title='Hba',size=0.5)
+p <- cowplot::plot_grid(plotlist=list(p1,p2,p3,p4,p5,p6), nrow=2)
+#pdf(file='feb03.conO.overview.pdf',width=12,height=3); print(p); dev.off();
+p
+```
+
+```{r fig.width=7,fig.height=7}
+conC$plotGraph(groups=oan,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+```{r fig.width=7,fig.height=7}
+conC$plotGraph(alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+### Glia-only integration
+
+done not gluing DRG+cochlea together
+```{r}
+load("../drg_cochlea.RData")
+```
+
+
+```{r fig.width=4,fig.height=4}
+conF$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+```
+
+
+```{r}
+x <- conF$clusters$leiden$groups
+glialf <- setNames(x %in% c(7,5,1,2,9,4,8), names(x)); 
+#glialf[oan[names(glialf)] %in% c("Clusters_7-mesenchyme","Clusters_5-neurons","Clusters_6-neuron+oligodendrocyte","Clusters_10-mainly prosensory")] <- FALSE
+glialf[oan[names(glialf)] %in% c("Clusters_7-mesenchyme","Clusters_5-neurons","Clusters_6-neuron+oligodendrocyte")] <- FALSE
+glialf[fann[names(glialf)] %in% c("Neurons")] <- FALSE
+```
+
+```{r fig.width=4,fig.height=4}
+conF$plotGraph(groups=glialf,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+
+```{r}
+vi <- names(glialf)[glialf] 
+object <- lapply(lapply(panel[-c(1,2)],function(x) x[,colnames(x) %in% vi]), basicP2proc, n.cores=30, min.cells.per.gene=0, n.odgenes=2e3, get.largevis=FALSE, make.geneknn=FALSE, get.tsne=T)
+```
+
+```{r}
+conG <- Conos$new(object,n.cores=30); 
+conG$buildGraph(k=15, k.self=5, space='PCA', ncomps=30, n.odgenes=2000, verbose=TRUE)
+conG$findCommunities(method=leiden.community,resolution=1.0)
+```
+
+Embeddings
+```{r}
+if(is.null(conG$misc$embeddings)) conG$misc$embeddings <- list()
+conG$misc$embeddings$umapPCA <- conG$embedGraph(method='UMAP');
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(2)
+conG$misc$embeddings$lvPCA <- conG$embedGraph(sgd_batches=2e8,alpha=1,seed=2)
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(2)
+conG$misc$embeddings$lvPCA <- conG$embedGraph(sgd_batches=2e8,alpha=1.5,seed=2)
+```
+
+
+
+
+```{r fig.width=9,fig.height=6}
+conG$embedding <- conG$misc$embeddings$lvPCA
+size <- 0.5; alpha <- 0.1; raster <- T;
+p1 <- conG$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p2 <- conG$plotGraph(title='annot',groups=fann,alpha=alpha,raster=raster,plot.na=F,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- conG$plotGraph(color.by='sample',mark.groups=F,raster=raster,alpha=alpha,show.legend=F,title='sample',size=size)
+p4 <- conG$plotGraph(groups=tissuef,mark.groups=F,raster=raster,alpha=alpha,show.legend=T,title='tissue',size=size)+theme(legend.position = c(0.2, 0.85))
+p5 <- conG$plotGraph(groups=scrubletf>0.25,raster=raster,alpha=alpha,title='scrublet',mark.groups=F,size=size,palette=c('FALSE'='gray90','TRUE'='red'))
+p6 <- conG$plotGraph(gene='Hba-a1',raster=raster,alpha=0.2,show.legend=F,title='Hba',size=0.5)
+p <- cowplot::plot_grid(plotlist=list(p1,p2,p3,p4,p5,p6), nrow=2)
+#pdf(file='feb03.conO.overview.pdf',width=12,height=3); print(p); dev.off();
+p
+```
+
+
+
+```{r fig.width=7,fig.height=7}
+conG$plotGraph(groups=oan,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+
+
+
+
+### Glia-only but with glued DRG+cochlea matrices
+
+
+```{r}
+load("../drg_cochlea.comb.RData")
+```
+
+```{r}
+vi <- names(glialf)[glialf] 
+object <- lapply(lapply(panel[-c(1)],function(x) x[,colnames(x) %in% vi]), basicP2proc, n.cores=30, min.cells.per.gene=0, n.odgenes=2e3, get.largevis=FALSE, make.geneknn=FALSE, get.tsne=T)
+```
+
+
+
+
+```{r}
+conE <- Conos$new(object,n.cores=30); 
+conE$buildGraph(k=15, k.self=5, space='PCA', ncomps=30, n.odgenes=2000, verbose=TRUE)
+conE$findCommunities(method=leiden.community,resolution=1.0)
+```
+
+Embeddings
+```{r}
+if(is.null(conE$misc$embeddings)) conE$misc$embeddings <- list()
+conE$misc$embeddings$umapPCA <- conE$embedGraph(method='UMAP');
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(2)
+conE$misc$embeddings$lvPCA <- conE$embedGraph(sgd_batches=2e8,alpha=1,seed=2)
+```
+
+```{r}
+#conO$embedGraph(sgd_batches=2e8);
+set.seed(2)
+conE$misc$embeddings$lvPCA <- conE$embedGraph(sgd_batches=2e8,alpha=1.5,seed=2)
+```
+
+
+```{r}
+timef <- conC$getDatasetPerCell()
+timef <- as.factor(setNames(gsub("_.*","",timef),names(timef)))
+```
+
+
+
+```{r fig.width=9,fig.height=6}
+conE$embedding <- conE$misc$embeddings$lvPCA
+size <- 0.5; alpha <- 0.1; raster <- T;
+p1 <- conE$plotGraph(title='leiden Comb',clustering='leiden',raster=raster,alpha=alpha,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p2 <- conE$plotGraph(title='annot',groups=fann,alpha=alpha,raster=raster,plot.na=F,size=size) #+ annotate("text",  x=-Inf, y = Inf, label = "clusters", vjust=1, hjust=0)
+p3 <- conE$plotGraph(color.by='sample',mark.groups=F,raster=raster,alpha=alpha,show.legend=F,title='sample',size=size)
+p4 <- conE$plotGraph(groups=tissuef,mark.groups=F,raster=raster,alpha=alpha,show.legend=T,title='tissue',size=size)+theme(legend.position = c(0.2, 0.85))
+p5 <- conE$plotGraph(groups=timef,raster=raster,alpha=alpha,title='time',mark.groups=F,size=size)+theme(legend.position = c(0.2, 0.8))
+p6 <- conE$plotGraph(gene='Hba-a1',raster=raster,alpha=0.2,show.legend=F,title='Hba',size=0.5)
+p <- cowplot::plot_grid(plotlist=list(p1,p2,p3,p4,p5,p6), nrow=2)
+#pdf(file='feb03.conO.overview.pdf',width=12,height=3); print(p); dev.off();
+p
+```
+
+
+
+```{r fig.width=7,fig.height=7}
+conE$plotGraph(groups=oan,alpha=0.1,size=0.5,font.size=c(4,4))
+```
+
+
+
+
+```{r fig.width=6, fig.height=6}
+conE$plotPanel(alpha=0.2,size=0.1, use.common.embedding = T)
+```
+
+
+
+
+
+
+
+
+```{r fig.width=6, fig.height=6}
+conE$plotPanel(alpha=0.2,size=0.1, use.common.embedding = F)
+```
+
+
+```{r}
+saveRDS(conE, '/d0/home/jennydongwx/DRG_cochlea/res/Apr2021/conE.rds')
+```
+
+
+```{r}
+source("~/m/pavan/DLI/conp2.r")
+conE.p2 <- p2app4conos(conE,file='conE_feb6.bin',max.cells=30e3,metadata = list(annotation=as.factor(oan),tissue=as.factor(tissuef),time=timef),additional.embeddings=list( DRG=conE$embedding[tissuef[rownames(conE$embedding)] == 'DRG',],cochlea=conE$embedding[tissuef[rownames(conE$embedding)] == 'cochlea',]))
+```
+
+
+
+
+
+
+
+
+
+
+### Old code
+
+
+Transfer annotation to the rest of the cells:
+```{r}
+ # propagate labels
+fann.prop <- conO$propagateLabels(labels = fann, verbose=T, fixed.initial.labels = T)$labels
+```
+
+
+
+```{r fig.width=7,fig.height=7}
+size <- 0.5; alpha <- 0.1; raster <- T;
+pp <- conO$plotPanel(use.common.embedding = TRUE,alpha=alpha,size=size,raster=raster)
+pdf(file='dec29.conO.panel.pdf',width=8,height=8); print(pp); dev.off();
+pp
+```
+
+Write out a downsampled p2 app:
+```{r}
+source("~/m/pavan/DLI/conp2.r")
+conO.p2 <- p2app4conos(conO,file='conO_dec29b.bin',max.cells=5e3,metadata = list(annotation=as.factor(fann.prop),tissue=as.factor(tissuef)),additional.embeddings=list( DRG=conO$embedding[tissuef[rownames(conO$embedding)] == 'DRG',],cochlea=conO$embedding[tissuef[rownames(conO$embedding)] == 'cochlea',]))
+```
+
+Calculate DE and plot markers for clusters:
+
+```{r}
+cluster.de <- conO$getDifferentialGenes(n.cores=30,append.auc=TRUE,z.threshold=1,upregulated.only=T)
+```
+
+
+```{r fig.width=7,fig.height=10}
+source("~/m/p2/conos/R/plot.R")
+pp <- plotDEheatmap(conO,conO$clusters$leiden$groups,cluster.de,n.genes.per.cluster = 10 ,show.gene.clusters=T, column.metadata=list(tissue=tissuef),row.label.font.size=6,min.auc=0.7)
+#pdf(file='cluster.heatmap.pdf',width=5,height=10); print(pp); dev.off();
+pp
+```
+
+
+DE and marker genes for annotations:
+
+```{r}
+ann.de <- conO$getDifferentialGenes(groups=fann.prop, n.cores=30,append.auc=TRUE,z.threshold=2,upregulated.only=T)
+```
+
+```{r fig.width=6,fig.height=5}
+source("~/m/p2/conos/R/plot.R")
+pp <- plotDEheatmap(conO,fann.prop,ann.de,n.genes.per.cluster = 30 ,show.gene.clusters=T, column.metadata=list(tissue=tissuef),row.label.font.size=9,min.auc=0.7,labeled.gene.subset=2)
+#pdf(file='ann.heatmap.pdf',width=7,height=14); print(pp); dev.off();
+pp
+```
+
+
+
+
+
+
